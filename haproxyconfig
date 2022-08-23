@@ -1,0 +1,26 @@
+global
+    maxconn 100
+
+defaults
+    log global
+    mode tcp
+    retries 2
+    timeout client 30m
+    timeout connect 60s
+    timeout server 30m
+    timeout check 5s
+
+listen stats
+    mode http
+    bind 172.16.0.194:7000
+    stats enable
+    stats uri /
+
+listen postgres
+    bind 172.16.0.194:5000
+    option httpchk
+    http-check expect status 200
+    default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
+    server db01host 172.16.0.188:5432 maxconn 100 check port 8008
+    server db02host 172.16.0.190:5432 maxconn 100 check port 8008
+    server db03host 172.16.0.191:5432 maxconn 100 check port 8008

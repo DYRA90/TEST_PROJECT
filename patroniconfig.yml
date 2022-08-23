@@ -1,0 +1,168 @@
+scope: BJITPROD # Cluster Name
+namespace: /service/
+name: BJITPROD_1  # Name of DB in Cluster
+
+# 5432 PostgreSQL standard port, not used by PostgreSQL itself but by HAProxy
+# 6432 PostgreSQL listening port used by HAproxy to route the database connections
+# 2380 etcd peer urls port required by the etcd members communication
+# 2376 etcd client port required by any client including patroni to communicate with etcd
+# 8008 patroni rest api port required by HAProxy to check the nodes status
+# 7000 HAProxy port to expose the proxy’s statistics
+
+restapi:
+  listen: 172.16.0.188:8008 # The IP address of the local server
+  connect_address: 172.16.0.188:8008 # The IP address of the local server
+# certfile: /certfile/location/.pem  # Specify the cert location 
+# keyfile: /certfile/location/.key # file # specify the file location
+# authentication: 
+#    username: username
+#    password: password
+
+etcd:
+  hosts: 172.16.0.192:2379,172.16.0.189:2379,172.16.0.193:2379
+
+bootstrap:
+  # This section is used only one-time when cluster is created.
+  # It will be written into the Etcd:/namespace/scope/config after initializong the new cluster.
+  # and all other cluster members will use it as a global configuration
+  # DCS(Distributed Configuration System)(AKA. Database track configuration)
+  # To make chnages to these parameters larer you must use the patroni API or patronictl edit-config
+  dcs: 
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    maximum_lag_on_faiover: 1048576
+#    master_start_timeout: 300
+#    synchronous_mode: false
+    postgresql:
+        use_pg_rewind: true
+        use_slots: true
+        parameters:
+          # ==============================================================================================
+          # ONLY USED WHEN DB IS FIRST CREATED 
+          # To change after initial created use: "patronictl edit-config" & "patronictll restart"
+          # These cluster wide parameters are stored in ETCD, not really in any local file.
+          max_connections: 300
+          wal_level: replica
+          hot_standby: on
+          hot_standby_feedback: on
+          wal_keep_segments: 20
+          shared_buffers: 2048MB # BRW: 40% of memory
+          temp_buffers: 72MB     # BRW: Max amount used by a session for temp space to access tables
+          work_mem: 32MB         # BRW: memory used sort(order by, distint, merge joins) & harh tables (hash joins, join aggr, hash in subqueries)
+          maintenance_work_mem: 128MB    # BRW: Used by maintenance Operations such as VACUUM, CREATE INDEX, and ALTER TABLE ADD FOREIGN KEY
+          max_stack_depth: 3MB     # min 100kB     # BRW stack size is currently 8192 k
+#         shared_preload_libraries: 'pg_stat_statements, pgaudit, passwordcheck, pgstattuple, auto_explain, pg_qualstats'   # BRW: Case does matter (their path is /usr/p                                                                                                                            # gsql-[version]/lib/)
+          max_wal_senders: 10
+          max_replication_slots: 10
+          checkpoint_timeout: 5min
+          chekpoint_completion_target: 0.9
+          archive_mode: on
+          archive_timeout: 1800s
+          archive_command: 'cp %p /backup/pgsql/12/archive/%f'
+
+        recovery_conf:
+          standby_mode: "on"
+          restore_command: 'cp /backup/pgsql/12/archive %f %p'
+
+      # some desired options for 'initdb'
+    initdb: # Note: it needs to be a list (some options need values, other are switches)
+        - encoding: UTF8
+        - data-checksums
+
+    pg_hba: # Add following lines to pg_hba.conf after running 'initdb'
+         - local           all      postgres       peer
+         - host      replication    replicator     md5
+
+      # Additional script to launched after initial cluster creation (will be passed the connection URL as parameter) 
+      # post_init: /usr/local/bin/setup_cluster.sh
+
+
+#  These parameters can be changed any time in this file (I think or possible in the /opt/pgsql/data/$PG_VERSION/postgresql.conf file)
+#    but should match all node for consistency
+#  Reload in runtime (without restart of patroni) by sending SIGHUP to patroni process.
+#    by performing "POST /reload" REST-API request or executing "patronictl reload" 
+postgresql:
+  listen: 172.16.0.188:5432
+  connect_address: 172.16.0.188:5432
+  data_dir: /data/pgsql/12/data
+  bin_dir: /usr/pgsql-12/bin
+  pgpass: /home/postgres/.pgpass
+  authentication:
+    replication:
+       username: replicator
+       password: postgres
+    superuser:
+      username: postgres
+      password: postgres
+  parameters:
+    wal_sender_timeout: 60s
+    max_standby_archive_delay: 30s   # Max delay before canceling queries when reading wal from archive
+    max_standby_streaming_delay: 30s # Max delay before canceling queries when reading from streaming wal
+    wal_receiver_timeout: 60s        # Time that receiver waits from communication from the primary in ms
+    wal_retrieve_retry_interval: 4s  # Time to wait before retrying to retrieve wal after failed attempt
+    superuser_reserved_connections: 3
+    password_encryption: on
+    authentication_timeout: 30s  # 1s-600s
+    statement_timeout: 216000000  # in ms (6 hours)
+    idle_in_transaction_session_timeout: 7200000 # in ms (2 hours)
+    autovacuum_work_mem: -1              # Min 1MB, or -1 to use maintenance_work_mem
+    autovacuum_vacuum_cost_delay: 10ms   # decrease sleep time between cleanup segements
+    autovacuum_vacuum_cost_limit: 2000   # 200 -> 2000
+    autovacuum_vacuum_scale_factor: .1   # .2 -> .1 now runs when 10% of table is dirty
+    dynamic_shared_memory_type: posix    # The default is the first option
+    temp_file_limit: 356176820KB         # BRW: 30% of data volume,, good starting point
+    max_fileper_process: 2000            # min 25
+    fsync: on                            # flush data to disk for crash recovery
+    wal_buffers: 64KB
+    max_wal_size: 3GB
+    wal_sender_timeout: 45s
+    random_page_cost: 2.0
+    log_destination: 'stderr'
+    logging_collector: on
+    log_directory: '/data/pgsql/12/logs'
+    log_file_name: 'postgresql-%a.log'
+    log_file_mode: 0640
+    log_truncate_on_rotation: on
+    log_rotation_age: 1d
+    log_rotation_size: 0
+    client_min_messages: error
+    log_min_duration_statement: 1000
+    log_connections: on
+    log_disconnections: on
+    log_duration: off
+    log_error_verbosity: default
+    log_hostname: on
+    log_line_prefix: '%m %c [%p] %e: %q [%1] %d %u@%r %a'
+    log_lock_waits: on
+    log_statement: 'none'
+    log_timezone: 'US/Eastern'
+    timezone: 'US/Eastern'
+#   lc_messages: 'en_US_UTF-8'
+#   lc_monetary: 'en_US_UTF-8'
+#   lc_numeric: 'en_US_UTF-8'
+#   lc_time: 'en_US_UTF-8'
+#   datestyle: 'iso, mdy'
+
+  create_replica_methods:
+    - basebackup
+
+#  pgbackrest:
+#    command: /usr/bin/pgbackrest --stanza=stanza-name --delta restore_command
+#    keep-data: True
+#    no-params: True
+
+  pg_hba: # Add following lines to the pg_hba.conf after running 'initdb'
+   - local    all               postgres                      peer
+   - local    all               all                           md5
+   - host     all               all         172.16.0.0/24     md5
+   - host     all               all         172.16.0.188/24   md5
+   - host     replication     replicator    172.16.0.0/24     md5
+   - host     replication     replicator    172.16.0.188/24   md5
+
+
+tags:
+   nofailover: false
+   noloadbalance: false
+   clonefrom: false
+   nosync: false
